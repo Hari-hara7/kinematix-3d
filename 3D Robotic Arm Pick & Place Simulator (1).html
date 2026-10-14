@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>3D Robotic Arm Pick &amp; Place Simulator</title>
+<style>
+:root{color-scheme:dark;--bg:#0b1220;--panel:rgba(16,24,40,.82);--line:#2a3550;--tx:#e6ecf8;--mu:#8a97b5;--ac:#ff7a1a;--ok:#2fd18b;--bad:#ff4d6d;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--tx);font:13px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;overflow:hidden}
+canvas{display:block}
+#panel{position:absolute;left:12px;top:12px;width:268px;max-height:calc(100% - 24px);overflow:auto;background:var(--panel);backdrop-filter:blur(10px);border:1px solid var(--line);border-radius:14px;padding:14px}
+h1{font-size:14px;margin:0 0 2px;letter-spacing:.3px}
+.sub{color:var(--mu);font-size:11px;margin-bottom:10px}
+h2{font-size:10px;text-transform:uppercase;letter-spacing:1.2px;color:var(--mu);margin:12px 0 6px}
+.row{display:grid;grid-template-columns:62px 1fr 40px;align-items:center;gap:6px;margin:3px 0}
+.row span:last-child{text-align:right;color:var(--mu);font-variant-numeric:tabular-nums}
+input[type=range]{width:100%;accent-color:var(--ac)}
+.btns{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+button{background:#1a2440;color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:7px 8px;font:inherit;cursor:pointer}
+button:hover{border-color:var(--ac)}
+button.on{border-color:var(--ok);color:var(--ok)}
+button.pri{background:var(--ac);border-color:var(--ac);color:#1a0d00;font-weight:600;grid-column:1/-1}
+#hud{position:absolute;right:12px;top:12px;background:var(--panel);backdrop-filter:blur(10px);border:1px solid var(--line);border-radius:14px;padding:12px 14px;min-width:190px;font-variant-numeric:tabular-nums}
+#hud b{color:var(--ac)}
+#status{margin-top:6px;font-weight:600;color:var(--ok)}
+#status.bad{color:var(--bad)}
+#hint{position:absolute;left:50%;bottom:10px;transform:translateX(-50%);color:var(--mu);font-size:11px;background:var(--panel);border:1px solid var(--line);border-radius:20px;padding:5px 12px;white-space:nowrap;max-width:94%;overflow:hidden;text-overflow:ellipsis}
+@media(max-width:700px){#panel{top:auto;bottom:8px;left:8px;right:8px;width:auto;max-height:42%}#hud{top:8px;right:8px;padding:8px 10px;min-width:0}#hint{display:none}}
+</style>
+</head>
+<body>
+<div id="panel">
+  <h1>ROBOTIC ARM · PICK &amp; PLACE</h1>
+  <div class="sub">Forward kinematics · Inverse kinematics · GSAP</div>
+  <div class="btns">
+    <button class="pri" id="auto">▶ Run Auto Pick &amp; Place</button>
+    <button id="grab">Grab / Release (G)</button>
+    <button id="reset">Reset (R)</button>
+  </div>
+  <h2>Joints (Forward Kinematics)</h2>
+  <div id="sliders"></div>
+  <h2>Tools</h2>
+  <div class="btns">
+    <button id="savep">+ Save Pose</button><button id="playp">▶ Play Poses</button>
+    <button id="clearp">Clear Poses (0)</button><button id="pause">❚❚ Pause</button>
+    <button id="tEnv">Reach Envelope</button><button id="tAx">Joint Axes</button>
+    <button id="tFol">Follow Cam</button><button id="tSnd">Sound: off</button>
+  </div>
+  <h2>Speed</h2>
+  <div class="row"><span>Sim</span><input type="range" id="speed" min=".3" max="2.5" step=".1" value="1"><span id="spv">1.0×</span></div>
+  <h2>Camera</h2>
+  <div class="btns"><button data-cam="0">Isometric</button><button data-cam="1">Top</button><button data-cam="2">Front</button><button data-cam="3">Side</button></div>
+</div>
+<div id="hud">
+  <div>End effector (m)</div>
+  <div><b>X</b> <span id="hx">0</span> &nbsp;<b>Y</b> <span id="hy">0</span> &nbsp;<b>Z</b> <span id="hz">0</span></div>
+  <div style="margin-top:4px">Holding: <span id="hh">—</span> · Placed: <span id="hp">0</span>/3</div>
+  <div>Time: <span id="ht">0.0</span>s · Cycles: <span id="hc">0</span></div>
+  <div id="status">READY</div>
+</div>
+<div id="hint">Keys: Q/E base · W/S shoulder · A/D elbow · Z/X wrist · Space gripper · G grab · R reset · 1–4 cameras · double-click floor to move</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<script>
+(function(){
+const L1=2.2,L2=2.0,L3=0.9,SH=0.9,CUBE=0.6;
+const $=id=>document.getElementById(id);
+
+// ---------- Scene ----------
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+document.body.prepend(renderer.domElement);
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0x0b1220);scene.fog=new THREE.Fog(0x0b1220,14,30);
+const camera=new THREE.PerspectiveCamera(45,1,.1,100);
+const controls=new THREE.OrbitControls(camera,renderer.domElement);
+controls.enableDamping=true;controls.maxPolarAngle=Math.PI/2.05;controls.minDistance=4;controls.maxDistance=22;
+
+scene.add(new THREE.HemisphereLight(0x9db8ff,0x1a2238,.7));
+const sun=new THREE.DirectionalLight(0xffffff,1.1);
+sun.position.set(6,10,5);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);
+Object.assign(sun.shadow.camera,{left:-9,right:9,top:9,bottom:-9,near:1,far:30});sun.shadow.bias=-.0004;
+scene.add(sun);
+const rim=new THREE.PointLight(0xff7a1a,.8,18);rim.position.set(-5,4,-5);scene.add(rim);
+
+const floor=new THREE.Mesh(new THREE.PlaneGeometry(18,14),new THREE.MeshStandardMaterial({color:0x141c30,roughness:.85,metalness:.1}));
+floor.rotation.x=-Math.PI/2;floor.receiveShadow=true;scene.add(floor);
+const grid=new THREE.GridHelper(18,36,0x2a3a66,0x1c2744);grid.position.y=.005;scene.add(grid);
+
+// ---------- Materials ----------
+const mArm=new THREE.MeshStandardMaterial({color:0xff7a1a,metalness:.55,roughness:.35});
+const mDark=new THREE.MeshStandardMaterial({color:0x2a3345,metalness:.7,roughness:.3});
+const mSteel=new THREE.MeshStandardMaterial({color:0xaab4c8,metalness:.9,roughness:.25});
+const box=(w,h,d,m,y=0)=>{const o=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),m);o.position.y=y;o.castShadow=o.receiveShadow=true;return o};
+const cyl=(r,h,m,y=0,axisX=false)=>{const o=new THREE.Mesh(new THREE.CylinderGeometry(r,r,h,32),m);o.position.y=y;if(axisX)o.rotation.z=Math.PI/2;o.castShadow=o.receiveShadow=true;return o};
+
+// ---------- Robot hierarchy ----------
+const robot=new THREE.Group();scene.add(robot);
+robot.add(cyl(.95,.3,mDark,.15));
+const yawG=new THREE.Group();robot.add(yawG);
+yawG.add(cyl(.55,.6,mDark,.6));
+const shoulderG=new THREE.Group();shoulderG.position.y=SH;yawG.add(shoulderG);
+shoulderG.add(cyl(.32,.7,mSteel,0,true));
+shoulderG.add(box(.38,L1,.38,mArm,L1/2));
+const elbowG=new THREE.Group();elbowG.position.y=L1;shoulderG.add(elbowG);
+elbowG.add(cyl(.27,.62,mSteel,0,true));
+elbowG.add(box(.32,L2,.32,mArm,L2/2));
+const wristG=new THREE.Group();wristG.position.y=L2;elbowG.add(wristG);
+wristG.add(cyl(.2,.5,mSteel,0,true));
+wristG.add(cyl(.09,.5,mDark,.25));
+wristG.add(box(.85,.18,.38,mDark,.45));
+const fL=box(.08,.5,.3,mSteel,L3),fR=box(.08,.5,.3,mSteel,L3);
+wristG.add(fL,fR);
+const tipMarker=new THREE.Mesh(new THREE.SphereGeometry(.05,12,12),new THREE.MeshBasicMaterial({color:0x2fd18b}));
+tipMarker.position.y=L3;wristG.add(tipMarker);
+
+// ---------- Pads & cubes ----------
+const PADS=[[-3,1.5],[-3,0],[-3,-1.5]],TARGETS=[[3,1.5],[3,0],[3,-1.5]],COLORS=[0xff4d6d,0x4da3ff,0xffd24d];
+function pad(x,z,c){const g=new THREE.Mesh(new THREE.RingGeometry(.45,.62,40),new THREE.MeshBasicMaterial({color:c,side:THREE.DoubleSide,transparent:true,opacity:.85}));
+  g.rotation.x=-Math.PI/2;g.position.set(x,.012,z);scene.add(g);
+  const f=new THREE.Mesh(new THREE.CircleGeometry(.45,40),new THREE.MeshBasicMaterial({color:c,transparent:true,opacity:.1,side:THREE.DoubleSide}));
+  f.rotation.x=-Math.PI/2;f.position.set(x,.01,z);scene.add(f)}
+PADS.forEach(p=>pad(p[0],p[1],0x4da3ff));TARGETS.forEach(p=>pad(p[0],p[1],0x2fd18b));
+const cubes=PADS.map((p,i)=>{const c=box(CUBE,CUBE,CUBE,new THREE.MeshStandardMaterial({color:COLORS[i],roughness:.4,metalness:.2}));
+  c.userData={vy:0,held:false,home:p,placed:false};c.position.set(p[0],CUBE/2,p[1]);scene.add(c);return c});
+
+// ---------- State ----------
+const HOME={yaw:0,a1:.5,a2:1.9,a3:Math.PI-2.4,g:1};
+const J={...HOME};
+let last={...J},tl=null,ikMode=false,holding=null;
+const S={r:3,th:0,y:2,g:1};
+const keys={};
+
+function ik(r,y,th){
+  const wy=y+L3-SH;let d=Math.hypot(r,wy);d=Math.min(Math.max(d,.3),L1+L2-.001);
+  const a2=Math.acos(Math.max(-1,Math.min(1,(d*d-L1*L1-L2*L2)/(2*L1*L2))));
+  const a1=Math.atan2(r,wy)-Math.atan2(L2*Math.sin(a2),L1+L2*Math.cos(a2));
+  J.yaw=th;J.a1=a1;J.a2=a2;J.a3=Math.PI-a1-a2;
+}
+function applyJ(){
+  yawG.rotation.y=J.yaw;shoulderG.rotation.x=J.a1;elbowG.rotation.x=J.a2;wristG.rotation.x=J.a3;
+  const x=.34+.21*J.g;fL.position.x=-x;fR.position.x=x;scene.updateMatrixWorld(true);
+}
+const tipV=new THREE.Vector3(),wV=new THREE.Vector3();
+function tip(){return wristG.localToWorld(tipV.set(0,L3,0))}
+function collides(){
+  const t=tip();wristG.getWorldPosition(wV);
+  return t.y<.27||wV.y<.5||(Math.hypot(t.x,t.z)<.9&&t.y<1.6);
+}
+let msgT=0;
+function say(t,bad){sfx(t,bad);const s=$('status');s.textContent=t;s.className=bad?'bad':'';msgT=performance.now()+(bad?900:0)}
+
+// ---------- Grab / Release ----------
+function grab(){
+  if(holding)return;const t=tip();let best=null,bd=.8;
+  cubes.forEach(c=>{const d=c.position.distanceTo(t);if(d<bd&&!c.userData.held){bd=d;best=c}});
+  if(!best){say('NO OBJECT IN RANGE',true);return}
+  wristG.attach(best);best.quaternion.identity();best.position.set(0,L3,0);
+  best.userData.held=true;best.userData.placed=false;holding=best;$('hh').textContent='Cube';say('OBJECT GRASPED');
+}
+function release(){
+  if(!holding)return;const c=holding;scene.attach(c);
+  const e=new THREE.Euler().setFromQuaternion(c.getWorldQuaternion(new THREE.Quaternion()),'YXZ');
+  c.rotation.set(0,Math.round(e.y/(Math.PI/2))*Math.PI/2,0);
+  c.userData.held=false;c.userData.vy=0;holding=null;$('hh').textContent='—';say('OBJECT RELEASED');
+}
+
+// ---------- Auto pick & place (IK + GSAP timeline) ----------
+function stopAuto(){if(tl){tl.kill();tl=null}ikMode=false;$('pause').textContent='❚❚ Pause';$('auto').textContent='▶ Run Auto Pick & Place'}
+function runAuto(){
+  stopAuto();resetCubes(false);
+  const t=tip();S.r=Math.hypot(t.x,t.z);S.th=Math.atan2(t.x,t.z);S.y=t.y;S.g=J.g;ikMode=true;
+  $('auto').textContent='■ Stop';say('AUTO · RUNNING');runT=0;
+  tl=gsap.timeline({onComplete:()=>{ikMode=false;tl=null;$('hc').textContent=++cycles;$('auto').textContent='▶ Run Auto Pick & Place';say('SEQUENCE COMPLETE')}});
+  const pol=(x,z)=>({r:Math.hypot(x,z),th:Math.atan2(x,z)});
+  const mv=(o,d,e='power2.inOut')=>tl.to(S,{...o,duration:d,ease:e});
+  PADS.forEach((p,i)=>{
+    const a=pol(p[0],p[1]),b=pol(TARGETS[i][0],TARGETS[i][1]);
+    tl.call(()=>say('APPROACH CUBE '+(i+1)));
+    mv({r:a.r,th:a.th,y:2,g:1},1.3);
+    mv({y:.3},.8);mv({g:0},.4,'power1.out');
+    tl.call(grab);
+    mv({y:2},.7);
+    tl.call(()=>say('TRANSPORT CUBE '+(i+1)));
+    mv({r:b.r,th:b.th},1.5);
+    mv({y:.31},.8);
+    tl.call(release);
+    mv({g:1},.4,'power1.out');
+    mv({y:2},.6);
+  });
+  mv({r:2.6,th:0,y:2.2},1.2);
+}
+function resetCubes(full=true){
+  cubes.forEach((c,i)=>{if(c.parent!==scene)scene.attach(c);const p=PADS[i];c.position.set(p[0],CUBE/2,p[1]);c.rotation.set(0,0,0);c.userData.held=false;c.userData.vy=0;c.userData.placed=false});
+  holding=null;$('hh').textContent='—';
+  if(full){stopAuto();gsap.to(J,{...HOME,duration:1,ease:'power2.inOut',onUpdate:syncSliders});say('RESET')}
+}
+
+// ---------- Cube physics (gravity + stacking collision) ----------
+function physics(dt){
+  cubes.forEach(c=>{
+    if(c.userData.held)return;
+    let sup=CUBE/2;
+    cubes.forEach(o=>{if(o!==c&&!o.userData.held&&Math.abs(o.position.x-c.position.x)<CUBE*.9&&Math.abs(o.position.z-c.position.z)<CUBE*.9&&o.position.y<c.position.y-.1)sup=Math.max(sup,o.position.y+CUBE)});
+    if(c.position.y>sup+.001){c.userData.vy-=18*dt;c.position.y=Math.max(sup,c.position.y+c.userData.vy*dt);if(c.position.y<=sup)c.userData.vy=0}
+    else{c.position.y=sup;c.userData.vy=0}
+    const onT=TARGETS.some(t=>Math.hypot(c.position.x-t[0],c.position.z-t[1])<.5);c.userData.placed=onT&&c.position.y<.35;
+  });
+  $('hp').textContent=cubes.filter(c=>c.userData.placed).length;
+}
+
+// ---------- UI ----------
+const defs=[['yaw','Base',-Math.PI,Math.PI],['a1','Shoulder',-1.4,1.6],['a2','Elbow',-.1,2.7],['a3','Wrist',-3.1,3.1],['g','Gripper',0,1]];
+const sl={};
+defs.forEach(([k,n,mn,mx])=>{
+  const r=document.createElement('div');r.className='row';
+  r.innerHTML=`<span>${n}</span><input type="range" min="${mn}" max="${mx}" step=".01" value="${J[k]}"><span></span>`;
+  $('sliders').appendChild(r);const inp=r.children[1],v=r.children[2];sl[k]={inp,v};
+  inp.addEventListener('input',()=>{if(ikMode||tl){stopAuto()}J[k]=parseFloat(inp.value)});
+});
+function syncSliders(){defs.forEach(([k])=>{sl[k].inp.value=J[k];sl[k].v.textContent=k==='g'?Math.round(J[k]*100)+'%':Math.round(J[k]*180/Math.PI)+'°'})}
+$('auto').onclick=()=>tl?stopAuto():runAuto();
+$('grab').onclick=()=>holding?release():grab();
+$('reset').onclick=()=>resetCubes(true);
+$('speed').oninput=e=>{gsap.globalTimeline.timeScale(parseFloat(e.target.value));$('spv').textContent=parseFloat(e.target.value).toFixed(1)+'×'};
+
+const CAMS=[[9,8,10,0,1,0],[0,17,.01,0,0,0],[0,4,13,0,1.5,0],[13,4,0,0,1.5,0]];
+function cam(i){const c=CAMS[i];gsap.to(camera.position,{x:c[0],y:c[1],z:c[2],duration:1,ease:'power2.inOut'});gsap.to(controls.target,{x:c[3],y:c[4],z:c[5],duration:1,ease:'power2.inOut'})}
+document.querySelectorAll('[data-cam]').forEach(b=>b.onclick=()=>cam(+b.dataset.cam));
+cam(0);
+
+addEventListener('keydown',e=>{
+  const k=e.key.toLowerCase();keys[k]=true;
+  if(k===' '){e.preventDefault();stopAuto();J.g=J.g>.5?0:1}
+  if(k==='g')holding?release():grab();
+  if(k==='r')resetCubes(true);
+  if('1234'.includes(k)&&k)cam(+k-1);
+});
+addEventListener('keyup',e=>keys[e.key.toLowerCase()]=false);
+
+// ---------- Tip trail ----------
+const TR=240,tp=new Float32Array(TR*3),tg=new THREE.BufferGeometry();
+tg.setAttribute('position',new THREE.BufferAttribute(tp,3));tg.setDrawRange(0,0);
+scene.add(new THREE.Line(tg,new THREE.LineBasicMaterial({color:0xff7a1a,transparent:true,opacity:.6})));
+let tn=0,tAcc=0;
+function trail(t){tAcc++;if(tAcc%3)return;if(tn<TR){tp.set([t.x,t.y,t.z],tn*3);tn++}else{tp.copyWithin(0,3);tp.set([t.x,t.y,t.z],(TR-1)*3)}
+  tg.attributes.position.needsUpdate=true;tg.setDrawRange(0,tn)}
+
+// ---------- Extra features ----------
+let runT=0,cycles=0,follow=false,poses=[],sndOn=false,ac=null,sndT=0;
+function sfx(t,bad){if(!sndOn)return;const n=performance.now();if(n<sndT)return;
+  const f=bad?140:{'OBJECT GRASPED':660,'OBJECT RELEASED':440,'SEQUENCE COMPLETE':880}[t];if(!f)return;sndT=n+(bad?400:80);
+  ac=ac||new(window.AudioContext||window.webkitAudioContext)();const o=ac.createOscillator(),g=ac.createGain(),c=ac.currentTime;
+  o.type=bad?'sawtooth':'triangle';o.frequency.value=f;g.gain.setValueAtTime(.06,c);g.gain.exponentialRampToValueAtTime(.0001,c+.25);
+  o.connect(g).connect(ac.destination);o.start();o.stop(c+.25)}
+const env=new THREE.Mesh(new THREE.SphereGeometry(L1+L2,36,18,0,Math.PI*2,0,Math.PI/2),new THREE.MeshBasicMaterial({color:0x4da3ff,wireframe:true,transparent:true,opacity:.12}));
+env.position.y=SH;env.visible=false;scene.add(env);
+const axes=[yawG,shoulderG,elbowG,wristG].map(g=>{const a=new THREE.AxesHelper(.9);a.visible=false;g.add(a);return a});
+function tgl(id,fn){const b=$(id);b.onclick=()=>{const on=b.classList.toggle('on');fn(on,b)}}
+tgl('tEnv',on=>env.visible=on);tgl('tAx',on=>axes.forEach(a=>a.visible=on));
+tgl('tFol',on=>{follow=on;if(!on)gsap.to(controls.target,{x:0,y:1,z:0,duration:.8})});
+tgl('tSnd',(on,b)=>{sndOn=on;b.textContent='Sound: '+(on?'on':'off')});
+$('pause').onclick=()=>{if(!tl)return;tl.paused(!tl.paused());$('pause').textContent=tl.paused()?'▶ Resume':'❚❚ Pause';say(tl.paused()?'PAUSED':'RUNNING')};
+$('savep').onclick=()=>{poses.push({...J});$('clearp').textContent='Clear Poses ('+poses.length+')';say('POSE '+poses.length+' SAVED')};
+$('clearp').onclick=()=>{poses=[];$('clearp').textContent='Clear Poses (0)';say('POSES CLEARED')};
+$('playp').onclick=()=>{if(!poses.length)return say('SAVE SOME POSES FIRST',true);stopAuto();
+  tl=gsap.timeline({onComplete:()=>{tl=null;say('REPLAY COMPLETE')}});say('REPLAYING POSES');
+  poses.forEach(p=>{tl.to(J,{yaw:p.yaw,a1:p.a1,a2:p.a2,a3:p.a3,g:p.g,duration:1.2,ease:'power2.inOut'});
+    tl.call(()=>{if(p.g<.3)grab();else if(holding)release()})})};
+const rc=new THREE.Raycaster();
+renderer.domElement.addEventListener('dblclick',e=>{
+  rc.setFromCamera(new THREE.Vector2(e.clientX/innerWidth*2-1,-(e.clientY/innerHeight)*2+1),camera);
+  const h=rc.intersectObject(floor)[0];if(!h)return;const r=Math.hypot(h.point.x,h.point.z);
+  if(r<1.6||r>3.9)return say('OUT OF REACH',true);
+  stopAuto();const t=tip();S.r=Math.hypot(t.x,t.z);S.th=Math.atan2(t.x,t.z);S.y=t.y;S.g=J.g;ikMode=true;
+  tl=gsap.timeline({onComplete:()=>{ikMode=false;tl=null;say('TARGET REACHED')}});
+  tl.to(S,{y:1.8,duration:.5}).to(S,{r,th:Math.atan2(h.point.x,h.point.z),duration:1.1,ease:'power2.inOut'}).to(S,{y:.3,duration:.6});
+  say('MOVING TO TARGET')});
+
+// ---------- Loop ----------
+function resize(){const w=innerWidth,h=innerHeight;renderer.setSize(w,h);camera.aspect=w/h;camera.updateProjectionMatrix()}
+addEventListener('resize',resize);resize();
+const clock=new THREE.Clock();
+applyJ();syncSliders();
+(function loop(){
+  requestAnimationFrame(loop);const dt=Math.min(clock.getDelta(),.05);
+  if(ikMode){ik(S.r,S.y,S.th);J.g=S.g;applyJ()}
+  else{
+    const sp=1.4*dt,m=(a,b,k,s)=>{if(keys[a]){J[k]+=s*sp;stopAuto()}if(keys[b]){J[k]-=s*sp;stopAuto()}};
+    m('q','e','yaw',1);m('w','s','a1',1);m('d','a','a2',1);m('z','x','a3',1);
+    defs.forEach(([k,,mn,mx])=>J[k]=Math.min(mx,Math.max(mn,J[k])));
+    applyJ();
+    if(collides()){Object.assign(J,last);applyJ();say('COLLISION · MOTION BLOCKED',true)}else last={...J};
+  }
+  if(!ikMode&&performance.now()>msgT&&$('status').className==='bad')say('READY');
+  physics(dt);if(ikMode&&!(tl&&tl.paused()))runT+=dt;$('ht').textContent=runT.toFixed(1);
+  const t=tip();$('hx').textContent=t.x.toFixed(2);$('hy').textContent=t.y.toFixed(2);$('hz').textContent=t.z.toFixed(2);
+  trail(t);if(follow)controls.target.lerp(t,.08);
+  if(ikMode||tl)syncSliders();else defs.forEach(([k])=>{sl[k].v.textContent=k==='g'?Math.round(J[k]*100)+'%':Math.round(J[k]*180/Math.PI)+'°';sl[k].inp.value=J[k]});
+  controls.update();renderer.render(scene,camera);
+})();
+})();
+</script>
+</body>
+</html>
